@@ -7,7 +7,6 @@ import random
 
 def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
     """Génère un graphe à communautés plantées.
-
     Args:
         n: nombre total de sommets
         n_com: nombre de communautés
@@ -19,7 +18,42 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
         Un graphe networkx, et un dictionnaire associant chaque sommet à sa
         communauté de référence.
     """
-    raise NotImplementedError
+    random.seed(seed)
+    g = nx.Graph()
+    nbr_sommet_par_com = n/n_com
+    for num_com in range(1,n_com+1) :
+        # Création des sommets pour une communauté
+        for i in range(1,int(nbr_sommet_par_com)+1):
+            g.add_node(f"{num_com}-{i}")
+
+
+        # Liaison des sommets entre eux
+        for i in range(1,int(nbr_sommet_par_com)+1):
+            # parcourir les sommets 2 fois ne sert à rien
+            # une fois tous les sommets liés au premier, il ne sert à rien de le revérifier
+            for j in range (i+1,int(nbr_sommet_par_com)+1):
+                if i == j : break
+                if g.has_edge(f"{num_com}-{i}", f"{num_com}-{j}"): break
+                if random.random() < p_in:
+                    g.add_edge(f"{num_com}-{i}", f"{num_com}-{j}")
+
+    # Maintenant que toutes les communautés sont construites,
+    # Il faut relier les sommets de chaque commu entre eux
+    # On boucle sur chaque communauté
+    for i in range(1,n_com):
+        # On boucle sur chaque sommet de la communauté
+        for j in range(1,int(nbr_sommet_par_com)+1):
+            # on boucle sur les communautés restantes
+            for k in range(i+1,n_com+1):
+                # Dans la communauté sélectionnée, on boucle sur chaque sommet
+                for l in range(1,int(nbr_sommet_par_com)+1):
+                    if g.has_edge(f"{i}-{j}", f"{k}-{l}"): break
+
+                    if random.random() < p_out:
+                        g.add_edge(f"{i}-{j}", f"{k}-{l}")
+
+
+    return g
 
 
 def load_real_graph(name):
