@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import time
 import random
 
+from networkx.classes import Graph
+
 
 def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
     """Génère un graphe à communautés plantées.
@@ -141,18 +143,57 @@ def modularity(G, communities, resolution=1.0):
     Returns:
         La modularité, valeur flottante.
     """
-    raise NotImplementedError
+    m = G.number_of_edges()
+    a = nx.adjacency_matrix(G)
+    Q = 0
+    G = Graph(G)
+    for node_i in G.nodes():
+        deg_i = G.degree[node_i]
+        for node_j in G.nodes():
+            if node_j == node_i : break
+            deg_j = G.degree[node_j]
+            Q += (a[node_i][node_j]-((deg_j*deg_i)/(2*m)))
+
+    return Q/(2*m)
 
 
 def plot_communities(G, communities, title="", with_labels=False):
-    """Visualise une partition en communautés.
-
+    """Visualise une partition en communautés
     Args:
         G: graphe networkx
         communities: liste de listes de sommets
         title: titre du graphique
+        with_labels: afficher ou non les étiquettes des sommets
     """
-    raise NotImplementedError
+    # 1. Associer à chaque sommet l'indice de sa communauté
+    comm_map = {}
+    for comm_idx, community in enumerate(communities):
+        for sommet in community:
+            comm_map[sommet] = comm_idx
+
+    # 2. Récupérer l'identifiant de communauté dans l'ordre de G.nodes()
+    # (valeur par défaut -1 si un sommet n'est dans aucune communauté)
+    node_colors = [comm_map.get(n, -1) for n in G.nodes()]
+
+    # 3. Calculer une disposition stable pour le dessin
+    pos = nx.spring_layout(G, seed=42)
+
+    # 4. Dessiner le graphe avec une colormap
+    plt.figure(figsize=(8, 6))
+    if title:
+        plt.title(title)
+
+    nx.draw(
+        G,
+        pos,
+        node_color=node_colors,
+        cmap=plt.cm.tab10,  # tab10 ou rainbow pour des couleurs distinctes
+        with_labels=with_labels,
+        node_size=300,
+        edge_color="gray",
+        alpha=0.9
+    )
+    plt.show()
 
 
 def benchmark_communities(G, algorithm, repeats=5):
@@ -166,4 +207,12 @@ def benchmark_communities(G, algorithm, repeats=5):
     Returns:
         Un couple (temps moyen, modularité moyenne).
     """
-    raise NotImplementedError
+    tps_moy = 0
+    mod_moy = 0
+    for _ in range(repeats):
+        start_time = time.time()
+        mod_moy = algorithm(G)
+        tps_moy += start_time - time.time()
+
+
+    return tps_moy / repeats , mod_moy/repeats
