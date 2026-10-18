@@ -23,6 +23,7 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
         Un graphe networkx, et un dictionnaire associant chaque sommet à sa
         communauté de référence.
     """
+
     som_comm = {}
     random.seed(seed)
     g = nx.Graph()
@@ -39,8 +40,6 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
             # parcourir les sommets 2 fois ne sert à rien
             # une fois tous les sommets liés au premier, il ne sert à rien de le revérifier
             for j in range (i+1,int(nbr_sommet_par_com)+1):
-                if i == j : break
-                if g.has_edge(f"{num_com}-{i}", f"{num_com}-{j}"): break
                 if random.random() < p_in:
                     g.add_edge(f"{num_com}-{i}", f"{num_com}-{j}")
 
@@ -54,7 +53,7 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
             for k in range(i+1,n_com+1):
                 # Dans la communauté sélectionnée, on boucle sur chaque sommet
                 for l in range(1,int(nbr_sommet_par_com)+1):
-                    if g.has_edge(f"{i}-{j}", f"{k}-{l}"): break
+                    if g.has_edge(f"{i}-{j}", f"{k}-{l}"): continue
 
                     if random.random() < p_out:
                         g.add_edge(f"{i}-{j}", f"{k}-{l}")
@@ -409,12 +408,17 @@ def label_propagation_communities_stabilized(G, max_iter=100):
     labels = {u: i for i, u in enumerate(nodes)}
 
     deg = dict(G.degree())
-    nodes.sort(key=lambda u: (-deg[u], str(u)))
 
     for _ in range(max_iter):
         changed = False
 
-        for u in nodes:
+        # Stabilisation par ordre décroissant des degrés,
+        # avec mélange aléatoire pour les sommets de même degré
+        current_nodes = list(nodes)
+        random.shuffle(current_nodes)
+        current_nodes.sort(key=lambda u: -deg[u])
+
+        for u in current_nodes:
             neighbors = list(G.neighbors(u))
             if not neighbors:
                 continue
@@ -423,10 +427,12 @@ def label_propagation_communities_stabilized(G, max_iter=100):
             max_freq = max(counts.values())
             best_labels = [lbl for lbl, freq in counts.items() if freq == max_freq]
 
+            # Si l'étiquette actuelle fait déjà partie des majoritaires, on la conserve
             if labels[u] in best_labels:
                 continue
 
-            new_label = min(best_labels)
+            # En cas d'égalité stricte entre nouvelles étiquettes, choix aléatoire
+            new_label = random.choice(best_labels)
             if new_label != labels[u]:
                 labels[u] = new_label
                 changed = True
@@ -446,7 +452,47 @@ def exact_modularity_maximization(G):
 
     Réservé aux très petites instances (n <= 10).
     """
-    raise NotImplementedError
+    nodes = list(G.nodes())
+    n = len(nodes)
+    if n == 0:
+        return []
+
+    # Création d'une communauté par sommet
+    best_partition = [[u] for u in nodes]
+
+    # calcul de la modularité
+    best_q = modularity(G, best_partition)
+
+    # Procédure récursive de génération de toutes les partitions d'ensemble (Bell numbers)
+    def _backtrack(node_idx, current_partition):
+        nonlocal best_q, best_partition
+
+        # si le sommet est le dernier sommet du graphe
+        if node_idx == n:
+            q = modularity(G, current_partition)
+            if q > best_q:
+                best_q = q
+                best_partition = [list(c) for c in current_partition]
+            return
+
+
+        u = nodes[node_idx]
+
+        # 1. Ajouter le sommet u à une communauté existante
+        for comm in current_partition:
+            comm.append(u)
+            _backtrack(node_idx + 1, current_partition)
+            comm.pop()
+
+        # 2. Créer une nouvelle communauté contenant uniquement u
+        current_partition.append([u])
+        _backtrack(node_idx + 1, current_partition)
+        current_partition.pop()
+
+    # Initialisation avec le premier sommet dans la première communauté
+    _backtrack(1, [[nodes[0]]])
+
+    return best_partition
 
 
 def modularity(G, communities, resolution=1.0):
