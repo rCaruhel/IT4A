@@ -24,42 +24,34 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
         communauté de référence.
     """
 
-    som_comm = {}
+    ground_truth = {}
     random.seed(seed)
     g = nx.Graph()
-    nbr_sommet_par_com = n/n_com
-    for num_com in range(1,n_com+1) :
+    nodes_per_comm = int(n / n_com)
+    for comm_idx in range(1, n_com + 1):
         # Création des sommets pour une communauté
-        for i in range(1,int(nbr_sommet_par_com)+1):
-            g.add_node(f"{num_com}-{i}")
-            som_comm[f"{num_com}-{i}"] = num_com
+        for i in range(1, nodes_per_comm + 1):
+            node_id = f"{comm_idx}-{i}"
+            g.add_node(node_id)
+            ground_truth[node_id] = comm_idx
 
-
-        # Liaison des sommets entre eux
-        for i in range(1,int(nbr_sommet_par_com)+1):
-            # parcourir les sommets 2 fois ne sert à rien
-            # une fois tous les sommets liés au premier, il ne sert à rien de le revérifier
-            for j in range (i+1,int(nbr_sommet_par_com)+1):
+        # Liaison des sommets entre eux au sein de la communauté
+        for i in range(1, nodes_per_comm + 1):
+            for j in range(i + 1, nodes_per_comm + 1):
                 if random.random() < p_in:
-                    g.add_edge(f"{num_com}-{i}", f"{num_com}-{j}")
+                    g.add_edge(f"{comm_idx}-{i}", f"{comm_idx}-{j}")
 
-    # Maintenant que toutes les communautés sont construites,
-    # Il faut relier les sommets de chaque commu entre eux
-    # On boucle sur chaque communauté
-    for i in range(1,n_com):
-        # On boucle sur chaque sommet de la communauté
-        for j in range(1,int(nbr_sommet_par_com)+1):
-            # on boucle sur les communautés restantes
-            for k in range(i+1,n_com+1):
-                # Dans la communauté sélectionnée, on boucle sur chaque sommet
-                for l in range(1,int(nbr_sommet_par_com)+1):
-                    if g.has_edge(f"{i}-{j}", f"{k}-{l}"): continue
-
+    # Liaison des sommets entre communautés différentes
+    for c1 in range(1, n_com):
+        for i in range(1, nodes_per_comm + 1):
+            for c2 in range(c1 + 1, n_com + 1):
+                for j in range(1, nodes_per_comm + 1):
+                    if g.has_edge(f"{c1}-{i}", f"{c2}-{j}"):
+                        continue
                     if random.random() < p_out:
-                        g.add_edge(f"{i}-{j}", f"{k}-{l}")
+                        g.add_edge(f"{c1}-{i}", f"{c2}-{j}")
 
-
-    return g,som_comm
+    return g, ground_truth
 
 
 def load_real_graph(name):
@@ -146,54 +138,8 @@ def girvan_newman_communities(G, n_communities=None):
     Returns:
         Liste de listes de sommets.
     """
-    from collections import deque
-
     # Copie de travail non orientée (Girvan-Newman suppose un graphe non orienté)
     g = Graph(G)
-
-    # ------------------------------------------------------------------
-    # Fonctions internes
-    # ------------------------------------------------------------------
-
-    def _edge_betweenness(graph):
-        """Calcule la betweenness de chaque arête (algorithme de Brandes)."""
-        bet = {e: 0.0 for e in graph.edges()}
-
-        for s in graph.nodes():
-            # --- Parcours en largeur depuis s ---
-            stack = []
-            queue = deque([s])
-            pred  = {w: [] for w in graph.nodes()}   # prédécesseurs sur chemins courts
-            sigma = dict.fromkeys(graph.nodes(), 0)  # nb de plus courts chemins depuis s
-            dist  = dict.fromkeys(graph.nodes(), -1) # distance
-            sigma[s] = 1
-            dist[s]  = 0
-
-            while queue:
-                v = queue.popleft()
-                stack.append(v)
-                for w in graph.neighbors(v):
-                    if dist[w] < 0:                    # w découvert pour la première fois
-                        dist[w] = dist[v] + 1
-                        queue.append(w)
-                    if dist[w] == dist[v] + 1:         # v est sur un plus court chemin vers w
-                        sigma[w] += sigma[v]
-                        pred[w].append(v)
-
-            # --- Remontée : accumulation des contributions ---
-            delta = dict.fromkeys(graph.nodes(), 0.0)
-            while stack:
-                w = stack.pop()
-                for v in pred[w]:
-                    # fraction de chemins passant par l'arête (v, w)
-                    c = (sigma[v] / sigma[w]) * (1.0 + delta[w])
-                    edge = (v, w) if graph.has_edge(v, w) else (w, v)
-                    if edge in bet:
-                        bet[edge] += c
-                    delta[v] += c
-
-        # Graphe non orienté : chaque paire (s, t) et (t, s) comptée deux fois
-        return {e: b / 2.0 for e, b in bet.items()}
 
     def _get_communities(graph):
         """Retourne la liste des composantes connexes sous forme de listes."""
@@ -202,66 +148,68 @@ def girvan_newman_communities(G, n_communities=None):
     # ------------------------------------------------------------------
     # Boucle principale de Girvan-Newman
     # ------------------------------------------------------------------
-    best_comms = _get_communities(g)
-    best_q     = modularity(G, best_comms)
+    best_communities = _get_communities(g)
+    best_q = modularity(G, best_communities)
 
     while g.number_of_edges() > 0:
-        current_comms = _get_communities(g)
+        current_communities = _get_communities(g)
 
         # Arrêt si le nombre de communautés cible est atteint
-        if n_communities is not None and len(current_comms) >= n_communities:
-            return current_comms
+        if n_communities is not None and len(current_communities) >= n_communities:
+            return current_communities
 
         # Supprimer l'arête de betweenness maximale
-        bet    = _edge_betweenness(g)
-        u, v   = max(bet, key=bet.get)
+        bet = nx.edge_betweenness_centrality(g)
+        u, v = max(bet, key=bet.get)
         g.remove_edge(u, v)
 
         # Mise à jour du meilleur partitionnement (cas n_communities=None)
         if n_communities is None:
-            new_comms = _get_communities(g)
-            q = modularity(G, new_comms)
+            new_communities = _get_communities(g)
+            q = modularity(G, new_communities)
             if q > best_q:
-                best_q     = q
-                best_comms = new_comms
+                best_q = q
+                best_communities = new_communities
 
-    return best_comms if n_communities is None else _get_communities(g)
+    return best_communities if n_communities is None else _get_communities(g)
 
 
 def louvain_communities(G, resolution=1.0):
-    """Détection de communautés par l'algorithme de Louvain (implémentation complète)."""
-    if G.number_of_edges() == 0:
-        return [[n] for n in G.nodes()]
+    """Détection de communautés par l'algorithme de Louvain.
 
-    # 1. Préparation d'un graphe pondéré (poids = 1.0 par défaut)
+    Args:
+        G: graphe networkx
+        resolution: paramètre de résolution de la modularité
+
+    Returns:
+        Liste de listes de sommets.
+    """
+    if G.number_of_nodes() == 0:
+        return []
+
+    # Graphe courant (initialisé à partir de G non pondéré, poids = 1.0)
     current_graph = nx.Graph()
     for u in G.nodes():
         current_graph.add_node(u)
-    for u, v, data in G.edges(data=True):
-        w = data.get("weight", 1.0)
-        if current_graph.has_edge(u, v):
-            current_graph[u][v]["weight"] += w
-        else:
-            current_graph.add_edge(u, v, weight=w)
+    for u, v in G.edges():
+        current_graph.add_edge(u, v, weight=1.0)
 
-    # Dictionnaire gardant la trace des sommets originaux contenus dans chaque super-sommet
-    node_to_orig = {n: [n] for n in G.nodes()}
-
-    # Poids total m du graphe (une boucle compte double dans les degrés, donc poids complet dans m)
-    m = current_graph.size(weight="weight")
+    node_to_orig = {u: [u] for u in G.nodes()}
+    m = G.number_of_edges()
+    if m == 0:
+        return [[u] for u in G.nodes()]
 
     while True:
         # =====================================================================
         # PHASE 1 : Optimisation locale de la modularité
         # =====================================================================
-        # Au départ, chaque noeud est dans sa propre communauté
-        node2comm = {n: i for i, n in enumerate(current_graph.nodes())}
+
+        ### création d'une communauté par sommet
+        node2comm = {u: i for i, u in enumerate(current_graph.nodes())}
         degrees = dict(current_graph.degree(weight="weight"))
+        tot_deg = {i: degrees[u] for i, u in enumerate(current_graph.nodes())}
 
-        # Somme des degrés par communauté (Sigma_tot)
-        tot_deg = {i: degrees[n] for i, n in enumerate(current_graph.nodes())}
-
-        improved_in_pass = False
+        improved = False
         moving = True
 
         while moving:
@@ -270,69 +218,64 @@ def louvain_communities(G, resolution=1.0):
                 c_u = node2comm[u]
                 k_u = degrees[u]
 
-                # Calcul des poids reliant u aux communautés voisines : k_{u, in}
+                # Poids des liens reliant u aux communautés voisines
                 comm_weights = {}
                 for v, data in current_graph[u].items():
-                    if v != u:  # On ignore la boucle interne à u lui-même
+                    if v != u:  # On ignore la boucle réflexive sur u
                         c_v = node2comm[v]
                         comm_weights[c_v] = comm_weights.get(c_v, 0.0) + data.get("weight", 1.0)
 
-                # Retirer temporairement u de sa communauté actuelle c_u
+                # Retrait temporaire de u de sa communauté
                 tot_deg[c_u] -= k_u
                 w_u_old = comm_weights.get(c_u, 0.0)
-
-                # Coût de référence pour remettre u dans son ancienne communauté c_u
-                base_gain = (w_u_old / m) - resolution * (tot_deg[c_u] * k_u) / (2.0 * (m ** 2))
+                base_gain = (w_u_old / m) - resolution * (tot_deg[c_u] * k_u) / (2.0 * m * m)
 
                 best_comm = c_u
                 best_delta_q = 0.0
 
-                # Tester toutes les communautés voisines (ainsi que c_u)
-                candidate_comms = set(comm_weights.keys()) | {c_u}
-                for c in candidate_comms:
+                for c in set(comm_weights.keys()) | {c_u}:
                     w_u_c = comm_weights.get(c, 0.0)
-                    gain = (w_u_c / m) - resolution * (tot_deg[c] * k_u) / (2.0 * (m ** 2))
+                    gain = (w_u_c / m) - resolution * (tot_deg[c] * k_u) / (2.0 * m * m)
                     delta_q = gain - base_gain
 
                     if delta_q > best_delta_q + 1e-12:
                         best_delta_q = delta_q
                         best_comm = c
 
-                # Placer u dans la meilleure communauté trouvée
+                # Réinsertion de u dans la meilleure communauté
                 tot_deg[best_comm] += k_u
                 node2comm[u] = best_comm
 
                 if best_comm != c_u:
                     moving = True
-                    improved_in_pass = True
+                    improved = True
 
-        # Regrouper les noeuds par communauté trouvée
         comm_groups = {}
-        for n, c in node2comm.items():
-            comm_groups.setdefault(c, []).append(n)
+        for u, c in node2comm.items():
+            comm_groups.setdefault(c, []).append(u)
 
-        # Condition d'arrêt : aucun mouvement ou aucune réduction du nombre de sommets
-        if not improved_in_pass or len(comm_groups) == current_graph.number_of_nodes():
+        # Condition d'arrêt : aucun déplacement ou aucune contraction supplémentaire
+        if not improved or len(comm_groups) == current_graph.number_of_nodes():
             break
 
         # =====================================================================
-        # PHASE 2 : Agrégation (contraction des communautés en super-sommets)
+        # PHASE 2 : Agrégation (super-graphe contracté)
         # =====================================================================
         new_graph = nx.Graph()
         new_node_to_orig = {}
-        old_to_new_id = {}
+        old_to_new = {}
 
-        for new_id, (_, nodes) in enumerate(comm_groups.items()):
+        for new_id, (_, members) in enumerate(comm_groups.items()):
             new_graph.add_node(new_id)
-            orig_list = []
-            for n in nodes:
-                orig_list.extend(node_to_orig[n])
-                old_to_new_id[n] = new_id
-            new_node_to_orig[new_id] = orig_list
+            orig_members = []
+            for u in members:
+                orig_members.extend(node_to_orig[u])
+                old_to_new[u] = new_id
+            new_node_to_orig[new_id] = orig_members
 
         for u, v, data in current_graph.edges(data=True):
             w = data.get("weight", 1.0)
-            cu, cv = old_to_new_id[u], old_to_new_id[v]
+            cu, cv = old_to_new[u], old_to_new[v]
             if new_graph.has_edge(cu, cv):
                 new_graph[cu][cv]["weight"] += w
             else:
@@ -407,7 +350,7 @@ def label_propagation_communities_stabilized(G, max_iter=100):
     nodes = list(G.nodes())
     labels = {u: i for i, u in enumerate(nodes)}
 
-    deg = dict(G.degree())
+    degrees = dict(G.degree())
 
     for _ in range(max_iter):
         changed = False
@@ -416,7 +359,7 @@ def label_propagation_communities_stabilized(G, max_iter=100):
         # avec mélange aléatoire pour les sommets de même degré
         current_nodes = list(nodes)
         random.shuffle(current_nodes)
-        current_nodes.sort(key=lambda u: -deg[u])
+        current_nodes.sort(key=lambda u: -degrees[u])
 
         for u in current_nodes:
             neighbors = list(G.neighbors(u))
@@ -458,41 +401,40 @@ def exact_modularity_maximization(G):
         return []
 
     # Création d'une communauté par sommet
-    best_partition = [[u] for u in nodes]
+    best_communities = [[u] for u in nodes]
 
-    # calcul de la modularité
-    best_q = modularity(G, best_partition)
+    # Calcul de la modularité initiale
+    best_q = modularity(G, best_communities)
 
     # Procédure récursive de génération de toutes les partitions d'ensemble (Bell numbers)
-    def _backtrack(node_idx, current_partition):
-        nonlocal best_q, best_partition
+    def _backtrack(node_idx, current_communities):
+        nonlocal best_q, best_communities
 
-        # si le sommet est le dernier sommet du graphe
+        # Si tous les sommets ont été assignés
         if node_idx == n:
-            q = modularity(G, current_partition)
+            q = modularity(G, current_communities)
             if q > best_q:
                 best_q = q
-                best_partition = [list(c) for c in current_partition]
+                best_communities = [list(c) for c in current_communities]
             return
-
 
         u = nodes[node_idx]
 
         # 1. Ajouter le sommet u à une communauté existante
-        for comm in current_partition:
+        for comm in current_communities:
             comm.append(u)
-            _backtrack(node_idx + 1, current_partition)
+            _backtrack(node_idx + 1, current_communities)
             comm.pop()
 
         # 2. Créer une nouvelle communauté contenant uniquement u
-        current_partition.append([u])
-        _backtrack(node_idx + 1, current_partition)
-        current_partition.pop()
+        current_communities.append([u])
+        _backtrack(node_idx + 1, current_communities)
+        current_communities.pop()
 
     # Initialisation avec le premier sommet dans la première communauté
     _backtrack(1, [[nodes[0]]])
 
-    return best_partition
+    return best_communities
 
 
 def modularity(G, communities, resolution=1.0):
@@ -511,27 +453,27 @@ def modularity(G, communities, resolution=1.0):
         return 0.0
 
     # Associer chaque sommet à son indice de communauté
-    comm_of = {}
-    for idx, comm in enumerate(communities):
-        for node in comm:
-            comm_of[node] = idx
+    node_to_comm = {}
+    for comm_idx, comm in enumerate(communities):
+        for u in comm:
+            node_to_comm[u] = comm_idx
 
     n_c = len(communities)
     # L[c] = nb d'arêtes internes à la communauté c  (O(E))
     # d[c] = somme des degrés des sommets de c        (O(V))
     L = [0] * n_c
     d = [0] * n_c
-    deg = dict(G.degree())
+    degrees = dict(G.degree())
 
     for u, v in G.edges():
-        cu, cv = comm_of.get(u, -1), comm_of.get(v, -1)
+        cu, cv = node_to_comm.get(u, -1), node_to_comm.get(v, -1)
         if cu == cv and cu != -1:
             L[cu] += 1
 
     for u in G.nodes():
-        c = comm_of.get(u, -1)
+        c = node_to_comm.get(u, -1)
         if c != -1:
-            d[c] += deg[u]
+            d[c] += degrees[u]
 
     return sum(L[c] / m - resolution * (d[c] / (2 * m)) ** 2 for c in range(n_c))
 
@@ -545,14 +487,14 @@ def plot_communities(G, communities, title="", with_labels=False):
         with_labels: afficher ou non les étiquettes des sommets
     """
     # 1. Associer à chaque sommet l'indice de sa communauté
-    comm_map = {}
+    node_to_comm = {}
     for comm_idx, community in enumerate(communities):
-        for sommet in community:
-            comm_map[sommet] = comm_idx
+        for u in community:
+            node_to_comm[u] = comm_idx
 
     # 2. Récupérer l'identifiant de communauté dans l'ordre de G.nodes()
     # (valeur par défaut -1 si un sommet n'est dans aucune communauté)
-    node_colors = [comm_map.get(n, -1) for n in G.nodes()]
+    node_colors = [node_to_comm.get(n, -1) for n in G.nodes()]
 
     # 3. Calculer une disposition stable pour le dessin
     pos = nx.spring_layout(G, seed=42)
