@@ -55,15 +55,87 @@ def generate_planted_partition_graph(n, n_com, p_in, p_out, seed=None):
 
 
 def load_real_graph(name):
-    """Charge un graphe réel depuis un fichier local.
+    """Charge un graphe réel non orienté depuis un fichier au format .graph.
+
+    Pour un graphe à N sommets, les N premières lignes sont de la forme :
+        nom_sommet nom_communauté
+    et toutes les suivantes représentent les liaisons entre sommets :
+        nom_sommet_1 nom_sommet_2
 
     Args:
-        name: identifiant du jeu de données ("amazon", "cora", etc.)
+        name: nom du jeu de données ou chemin vers le fichier .graph
 
     Returns:
-        Le graphe et la partition de référence si elle est disponible.
+        (G, ground_truth) : graphe NetworkX non orienté et dictionnaire {sommet: communauté}
     """
-    raise NotImplementedError
+    base_dir = os.path.dirname(__file__)
+    data_dir = os.path.join(base_dir, "data")
+
+    base_name = name[:-6] if name.endswith(".graph") else name
+    graph_name = f"{base_name}.graph"
+
+    candidates = [
+        name,
+        graph_name,
+        os.path.join(os.getcwd(), name),
+        os.path.join(os.getcwd(), graph_name),
+        os.path.join(data_dir, base_name, graph_name),
+        os.path.join(data_dir, graph_name),
+        os.path.join(base_dir, graph_name),
+        os.path.join(base_dir, name),
+    ]
+
+    file_path = None
+    for cand in candidates:
+        if os.path.isfile(cand):
+            file_path = cand
+            break
+
+    if file_path is None:
+        raise FileNotFoundError(f"Fichier de graphe (.graph) introuvable pour : {name}")
+
+    ground_truth = {}
+    edges = []
+    reading_edges = False
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line_str = line.strip()
+
+            # saut des lignes vides et marquage du passage aux arêtes si les sommets sont déjà lus
+            if not line_str:
+                if ground_truth:
+                    reading_edges = True
+                continue
+
+            # saut des lignes de commentaires
+            if line_str.startswith("#"):
+                continue
+
+            parts = line_str.split()
+            if len(parts) < 2:
+                continue
+
+            u, v = parts[0], parts[1]
+
+            # vérification de si le sommet apparait dans la liste des communautés
+            # si oui, le reste du fichier correspond aux arêtes entre les sommets
+            if not reading_edges:
+                if u in ground_truth:
+                    reading_edges = True
+                else:
+                    ground_truth[u] = v
+                    continue
+
+            # enregistrement de la liaison entre les deux sommets
+            edges.append((u, v))
+
+    # construction du graphe non orienté avec les sommets et arêtes extraits
+    G = nx.Graph()
+    G.add_nodes_from(ground_truth.keys())
+    G.add_edges_from(edges)
+
+    return G, ground_truth
 
 def load_cora(directed=False):
     """Charge le jeu de données Cora.
@@ -87,7 +159,7 @@ def load_cora(directed=False):
     CONTENT_FILE = os.path.join(DATA_DIR, "cora.content")
     CITES_FILE   = os.path.join(DATA_DIR, "cora.cites")
 
-    # --- Téléchargement et extraction si nécessaire ---
+    # téléchargement et extraction de l'archive si les fichiers sont absents
     if not os.path.isfile(CONTENT_FILE) or not os.path.isfile(CITES_FILE):
         os.makedirs(DATA_DIR, exist_ok=True)
         archive_path = os.path.join(DATA_DIR, "cora.tgz")
@@ -98,24 +170,24 @@ def load_cora(directed=False):
             tar.extractall(path=DATA_BASE)
         print("Données Cora disponibles.")
 
-    # --- Lecture de cora.content : noeuds et partition de référence ---
-    # Format : <paper_id> TAB <feat_1> TAB ... TAB <feat_1433> TAB <class_label>
-    ground_truth = {}   # {paper_id (str): class_label (str)}
+    # lecture de cora.content pour extraire les sommets et les classes de référence
+    ground_truth = {}
     with open(CONTENT_FILE, "r") as f:
         for line in f:
             parts = line.strip().split("\t")
+            # ligne non prise en compte s'il n'y a pas le bon nombre d'élements
             if len(parts) < 2:
                 continue
             node_id     = parts[0]
-            class_label = parts[-1]     # dernier champ = catégorie
+            # dernier élément : nom de la communauté
+            class_label = parts[-1]
             ground_truth[node_id] = class_label
 
-    # --- Construction du graphe ---
+    # initialisation du graphe avec l'ensemble des sommets
     G = nx.DiGraph() if directed else nx.Graph()
     G.add_nodes_from(ground_truth.keys())
 
-    # --- Lecture de cora.cites : arêtes ---
-    # Format : <cited_id> TAB <citing_id>
+    # lecture de cora.cites pour ajouter les arêtes de citation
     with open(CITES_FILE, "r") as f:
         for line in f:
             parts = line.strip().split("\t")
@@ -126,6 +198,7 @@ def load_cora(directed=False):
                 G.add_edge(u, v)
 
     return G, ground_truth
+
 
 def girvan_newman_communities(G, n_communities=None):
     """Détection de communautés par Girvan-Newman.
@@ -138,32 +211,31 @@ def girvan_newman_communities(G, n_communities=None):
     Returns:
         Liste de listes de sommets.
     """
-    # Copie de travail non orientée (Girvan-Newman suppose un graphe non orienté)
+    # copie de travail non orientée pour la suppression progressive des arêtes
     g = Graph(G)
 
+    # récupération des communautés en récupérant les éléments séparés du graphe
     def _get_communities(graph):
-        """Retourne la liste des composantes connexes sous forme de listes."""
         return [list(c) for c in nx.connected_components(graph)]
 
-    # ------------------------------------------------------------------
-    # Boucle principale de Girvan-Newman
-    # ------------------------------------------------------------------
+    # initialisation de la meilleure partition avec le graphe complet
     best_communities = _get_communities(g)
     best_q = modularity(G, best_communities)
 
+    # suppression itérative des arêtes de plus forte betweenness
     while g.number_of_edges() > 0:
         current_communities = _get_communities(g)
 
-        # Arrêt si le nombre de communautés cible est atteint
+        # arrêt anticipé si le nombre cible de communautés est atteint
         if n_communities is not None and len(current_communities) >= n_communities:
             return current_communities
 
-        # Supprimer l'arête de betweenness maximale
+        # calcul de betweenness et suppression de l'arête maximale
         bet = nx.edge_betweenness_centrality(g)
         u, v = max(bet, key=bet.get)
         g.remove_edge(u, v)
 
-        # Mise à jour du meilleur partitionnement (cas n_communities=None)
+        # mise à jour de la meilleure partition selon la modularité si aucun seuil n'est fixé
         if n_communities is None:
             new_communities = _get_communities(g)
             q = modularity(G, new_communities)
@@ -187,24 +259,22 @@ def louvain_communities(G, resolution=1.0):
     if G.number_of_nodes() == 0:
         return []
 
-    # Graphe courant (initialisé à partir de G non pondéré, poids = 1.0)
+    # initialisation du graphe de travail avec des arêtes de poids 1.0
     current_graph = nx.Graph()
     for u in G.nodes():
         current_graph.add_node(u)
     for u, v in G.edges():
         current_graph.add_edge(u, v, weight=1.0)
 
+    # suivi de la correspondance entre chaque super-sommet et ses sommets d'origine
     node_to_orig = {u: [u] for u in G.nodes()}
     m = G.number_of_edges()
     if m == 0:
         return [[u] for u in G.nodes()]
 
     while True:
-        # =====================================================================
-        # PHASE 1 : Optimisation locale de la modularité
-        # =====================================================================
-
-        ### création d'une communauté par sommet
+        # phase 1 : optimisation locale de la modularité
+        # chaque sommet commence dans sa propre communauté
         node2comm = {u: i for i, u in enumerate(current_graph.nodes())}
         degrees = dict(current_graph.degree(weight="weight"))
         tot_deg = {i: degrees[u] for i, u in enumerate(current_graph.nodes())}
@@ -212,20 +282,21 @@ def louvain_communities(G, resolution=1.0):
         improved = False
         moving = True
 
+        # boucle de déplacement des sommets vers la communauté voisine la plus avantageuse
         while moving:
             moving = False
             for u in list(current_graph.nodes()):
                 c_u = node2comm[u]
                 k_u = degrees[u]
 
-                # Poids des liens reliant u aux communautés voisines
+                # calcul du poids total des liens reliant u à chaque communauté voisine
                 comm_weights = {}
                 for v, data in current_graph[u].items():
-                    if v != u:  # On ignore la boucle réflexive sur u
+                    if v != u:
                         c_v = node2comm[v]
                         comm_weights[c_v] = comm_weights.get(c_v, 0.0) + data.get("weight", 1.0)
 
-                # Retrait temporaire de u de sa communauté
+                # retrait temporaire de u de sa communauté actuelle
                 tot_deg[c_u] -= k_u
                 w_u_old = comm_weights.get(c_u, 0.0)
                 base_gain = (w_u_old / m) - resolution * (tot_deg[c_u] * k_u) / (2.0 * m * m)
@@ -233,6 +304,7 @@ def louvain_communities(G, resolution=1.0):
                 best_comm = c_u
                 best_delta_q = 0.0
 
+                # recherche de la communauté voisine maximisant le gain de modularité
                 for c in set(comm_weights.keys()) | {c_u}:
                     w_u_c = comm_weights.get(c, 0.0)
                     gain = (w_u_c / m) - resolution * (tot_deg[c] * k_u) / (2.0 * m * m)
@@ -242,7 +314,7 @@ def louvain_communities(G, resolution=1.0):
                         best_delta_q = delta_q
                         best_comm = c
 
-                # Réinsertion de u dans la meilleure communauté
+                # réinsertion de u dans la meilleure communauté trouvée
                 tot_deg[best_comm] += k_u
                 node2comm[u] = best_comm
 
@@ -250,21 +322,21 @@ def louvain_communities(G, resolution=1.0):
                     moving = True
                     improved = True
 
+        # regroupement des sommets par communauté
         comm_groups = {}
         for u, c in node2comm.items():
             comm_groups.setdefault(c, []).append(u)
 
-        # Condition d'arrêt : aucun déplacement ou aucune contraction supplémentaire
+        # arrêt si aucun déplacement n'a amélioré la modularité ou si aucune contraction n'est possible
         if not improved or len(comm_groups) == current_graph.number_of_nodes():
             break
 
-        # =====================================================================
-        # PHASE 2 : Agrégation (super-graphe contracté)
-        # =====================================================================
+        # phase 2 : contraction des communautés en super-sommets
         new_graph = nx.Graph()
         new_node_to_orig = {}
         old_to_new = {}
 
+        # création des super-sommets et mise à jour de la correspondance avec les sommets d'origine
         for new_id, (_, members) in enumerate(comm_groups.items()):
             new_graph.add_node(new_id)
             orig_members = []
@@ -273,6 +345,7 @@ def louvain_communities(G, resolution=1.0):
                 old_to_new[u] = new_id
             new_node_to_orig[new_id] = orig_members
 
+        # agrégation des arêtes entre super-sommets avec sommation des poids
         for u, v, data in current_graph.edges(data=True):
             w = data.get("weight", 1.0)
             cu, cv = old_to_new[u], old_to_new[v]
@@ -300,10 +373,13 @@ def label_propagation_communities_simple(G, max_iter=100):
     if G.number_of_nodes() == 0:
         return []
 
+    # initialisation : chaque sommet reçoit une étiquette unique
     nodes = list(G.nodes())
     labels = {u: i for i, u in enumerate(nodes)}
 
+    # propagation itérative des étiquettes majoritaires
     for _ in range(max_iter):
+        # mélange aléatoire de l'ordre d'évaluation des sommets à chaque tour
         random.shuffle(nodes)
         changed = False
 
@@ -312,21 +388,26 @@ def label_propagation_communities_simple(G, max_iter=100):
             if not neighbors:
                 continue
 
+            # comptage des étiquettes parmi les voisins
             counts = Counter(labels[v] for v in neighbors)
             max_freq = max(counts.values())
             best_labels = [lbl for lbl, freq in counts.items() if freq == max_freq]
 
+            # si l'étiquette actuelle est déjà l'unique majoritaire, aucun changement
             if labels[u] in best_labels and len(best_labels) == 1:
                 continue
 
+            # tirage aléatoire en cas d'égalité parmi les étiquettes les plus fréquentes
             new_label = random.choice(best_labels)
             if new_label != labels[u]:
                 labels[u] = new_label
                 changed = True
 
+        # arrêt si les étiquettes se sont stabilisées
         if not changed:
             break
 
+    # regroupement des sommets partageant la même étiquette
     communities = {}
     for u, lbl in labels.items():
         communities.setdefault(lbl, []).append(u)
@@ -347,16 +428,15 @@ def label_propagation_communities_stabilized(G, max_iter=100):
     if G.number_of_nodes() == 0:
         return []
 
+    # initialisation : chaque sommet reçoit une étiquette unique
     nodes = list(G.nodes())
     labels = {u: i for i, u in enumerate(nodes)}
-
     degrees = dict(G.degree())
 
     for _ in range(max_iter):
         changed = False
 
-        # Stabilisation par ordre décroissant des degrés,
-        # avec mélange aléatoire pour les sommets de même degré
+        # parcours des sommets par ordre décroissant de degré avec tirage aléatoire pour les ex-aequo
         current_nodes = list(nodes)
         random.shuffle(current_nodes)
         current_nodes.sort(key=lambda u: -degrees[u])
@@ -366,29 +446,32 @@ def label_propagation_communities_stabilized(G, max_iter=100):
             if not neighbors:
                 continue
 
+            # comptage des étiquettes parmi les voisins
             counts = Counter(labels[v] for v in neighbors)
             max_freq = max(counts.values())
             best_labels = [lbl for lbl, freq in counts.items() if freq == max_freq]
 
-            # Si l'étiquette actuelle fait déjà partie des majoritaires, on la conserve
+            # si l'étiquette actuelle fait déjà partie des majoritaires, on la conserve pour stabiliser
             if labels[u] in best_labels:
                 continue
 
-            # En cas d'égalité stricte entre nouvelles étiquettes, choix aléatoire
+            # en cas d'égalité entre nouvelles étiquettes, choix aléatoire
             new_label = random.choice(best_labels)
             if new_label != labels[u]:
                 labels[u] = new_label
                 changed = True
 
+        # arrêt dès que plus aucun sommet ne change d'étiquette
         if not changed:
             break
 
+    # regroupement des sommets par étiquette finale
     communities = {}
     for u, lbl in labels.items():
         communities.setdefault(lbl, []).append(u)
 
-
     return list(communities.values())
+
 
 def exact_modularity_maximization(G):
     """Recherche exacte de la partition de modularité maximale.
@@ -400,17 +483,15 @@ def exact_modularity_maximization(G):
     if n == 0:
         return []
 
-    # Création d'une communauté par sommet
+    # initialisation avec la partition où chaque sommet forme sa propre communauté
     best_communities = [[u] for u in nodes]
-
-    # Calcul de la modularité initiale
     best_q = modularity(G, best_communities)
 
-    # Procédure récursive de génération de toutes les partitions d'ensemble (Bell numbers)
+    # exploration récursive de toutes les partitions possibles (nombres de Bell)
     def _backtrack(node_idx, current_communities):
         nonlocal best_q, best_communities
 
-        # Si tous les sommets ont été assignés
+        # condition d'arrêt : tous les sommets ont été placés dans une communauté
         if node_idx == n:
             q = modularity(G, current_communities)
             if q > best_q:
@@ -420,18 +501,18 @@ def exact_modularity_maximization(G):
 
         u = nodes[node_idx]
 
-        # 1. Ajouter le sommet u à une communauté existante
+        # tentative d'ajout du sommet u à chacune des communautés existantes
         for comm in current_communities:
             comm.append(u)
             _backtrack(node_idx + 1, current_communities)
             comm.pop()
 
-        # 2. Créer une nouvelle communauté contenant uniquement u
+        # tentative de création d'une nouvelle communauté isolée pour u
         current_communities.append([u])
         _backtrack(node_idx + 1, current_communities)
         current_communities.pop()
 
-    # Initialisation avec le premier sommet dans la première communauté
+    # démarrage du backtracking en plaçant le premier sommet dans la première communauté
     _backtrack(1, [[nodes[0]]])
 
     return best_communities
@@ -452,29 +533,32 @@ def modularity(G, communities, resolution=1.0):
     if m == 0:
         return 0.0
 
-    # Associer chaque sommet à son indice de communauté
+    # association de chaque sommet à l'indice de sa communauté
     node_to_comm = {}
     for comm_idx, comm in enumerate(communities):
         for u in comm:
             node_to_comm[u] = comm_idx
 
     n_c = len(communities)
-    # L[c] = nb d'arêtes internes à la communauté c  (O(E))
-    # d[c] = somme des degrés des sommets de c        (O(V))
+    # L[c] : nombre d'arêtes internes à la communauté c (complexité O(E))
+    # d[c] : somme des degrés des sommets de la communauté c (complexité O(V))
     L = [0] * n_c
     d = [0] * n_c
     degrees = dict(G.degree())
 
+    # calcul des arêtes intra-communautaires
     for u, v in G.edges():
         cu, cv = node_to_comm.get(u, -1), node_to_comm.get(v, -1)
         if cu == cv and cu != -1:
             L[cu] += 1
 
+    # somme des degrés par communauté
     for u in G.nodes():
         c = node_to_comm.get(u, -1)
         if c != -1:
             d[c] += degrees[u]
 
+    # calcul de la formule de modularité de Newman-Girvan
     return sum(L[c] / m - resolution * (d[c] / (2 * m)) ** 2 for c in range(n_c))
 
 
@@ -486,20 +570,19 @@ def plot_communities(G, communities, title="", with_labels=False):
         title: titre du graphique
         with_labels: afficher ou non les étiquettes des sommets
     """
-    # 1. Associer à chaque sommet l'indice de sa communauté
+    # association de chaque sommet à l'indice numérique de sa communauté
     node_to_comm = {}
     for comm_idx, community in enumerate(communities):
         for u in community:
             node_to_comm[u] = comm_idx
 
-    # 2. Récupérer l'identifiant de communauté dans l'ordre de G.nodes()
-    # (valeur par défaut -1 si un sommet n'est dans aucune communauté)
+    # attribution d'une couleur par sommet selon sa communauté
     node_colors = [node_to_comm.get(n, -1) for n in G.nodes()]
 
-    # 3. Calculer une disposition stable pour le dessin
+    # calcul d'une disposition 2D stable des sommets pour l'affichage
     pos = nx.spring_layout(G, seed=42)
 
-    # 4. Dessiner le graphe avec une colormap
+    # tracé du graphe avec colorimétrie des communautés
     plt.figure(figsize=(8, 6))
     if title:
         plt.title(title)
@@ -508,7 +591,7 @@ def plot_communities(G, communities, title="", with_labels=False):
         G,
         pos,
         node_color=node_colors,
-        cmap=plt.cm.tab10,  # tab10 ou rainbow pour des couleurs distinctes
+        cmap=plt.cm.tab10,
         with_labels=with_labels,
         node_size=300,
         edge_color="gray",
@@ -530,9 +613,11 @@ def benchmark_communities(G, algorithm, repeats=5):
     """
     tps_total = 0.0
     mod_total = 0.0
+
     for _ in range(repeats):
         start_time = time.time()
         comms = algorithm(G)
         tps_total += time.time() - start_time
         mod_total += modularity(G, comms)
+
     return tps_total / repeats, mod_total / repeats
